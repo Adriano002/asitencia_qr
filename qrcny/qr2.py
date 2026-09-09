@@ -10,6 +10,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+import numpy as np
 
 # ===== CONFIGURACIÓN DE PÁGINA =====
 st.set_page_config(
@@ -45,6 +46,31 @@ st.markdown("""
     @media (max-width: 768px) { h1 { font-size: 1.8rem !important; } .stButton > button { width: 100% !important; } }
 </style>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# AJUSTE DE HORA PARA PERÚ (UTC-5)
+# ============================================================
+
+def hora_peru():
+    """Retorna la hora actual en Perú (UTC-5)"""
+    from datetime import timezone
+    utc_now = datetime.now(timezone.utc)
+    peru_time = utc_now - timedelta(hours=5)
+    return peru_time
+
+def hoy_peru():
+    """Retorna la fecha actual en Perú formato YYYY-MM-DD"""
+    return hora_peru().strftime("%Y-%m-%d")
+
+def hora_peru_str():
+    """Retorna la hora actual en Perú formato HH:MM:SS"""
+    return hora_peru().strftime("%H:%M:%S")
+
+def es_dia_laboral_peru(fecha=None):
+    """Verifica si hoy es día laboral en Perú (UTC-5)"""
+    if fecha is None:
+        fecha = hora_peru()
+    return fecha.weekday() < 5
 
 # ============================================================
 # BASE DE DATOS
@@ -143,14 +169,9 @@ def obtener_config_horario(turno_id):
         return {'entrada': r['hora_entrada'], 'limite': r['hora_limite']}
     return {'entrada': '08:00', 'limite': '08:15'}
 
-def es_dia_laboral(fecha=None):
-    if fecha is None:
-        fecha = datetime.now()
-    return fecha.weekday() < 5
-
 def es_dia_especial(fecha=None):
     if fecha is None:
-        fecha = datetime.now().strftime("%Y-%m-%d")
+        fecha = hora_peru().strftime("%Y-%m-%d")
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT id FROM dias_especiales WHERE fecha = ? AND activo = 1", (fecha,))
@@ -160,13 +181,13 @@ def es_dia_especial(fecha=None):
 
 def se_toma_asistencia(fecha=None):
     if fecha is None:
-        fecha = datetime.now()
+        fecha = hora_peru()
     if es_dia_especial(fecha.strftime("%Y-%m-%d")):
         return True
-    return es_dia_laboral(fecha)
+    return es_dia_laboral_peru(fecha)
 
 def obtener_config_con_dia_especial(turno_id):
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = hora_peru().strftime("%Y-%m-%d")
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT hora_entrada FROM dias_especiales WHERE fecha = ? AND activo = 1", (hoy,))
@@ -317,7 +338,9 @@ def registrar_asistencia_rapida(dni, usuario=None):
     if not dni or len(dni) != 8 or not dni.isdigit():
         return False, "❌ DNI inválido (8 dígitos)"
     
-    hoy_dt = datetime.now()
+    hoy_dt = hora_peru()
+    hoy = hoy_dt.strftime("%Y-%m-%d")
+    
     if not se_toma_asistencia(hoy_dt):
         if es_dia_especial(hoy_dt.strftime("%Y-%m-%d")):
             return False, "❌ Hoy es día especial pero no está configurado correctamente"
@@ -348,8 +371,7 @@ def registrar_asistencia_rapida(dni, usuario=None):
                 conn.close()
                 return False, f"❌ Este alumno es del turno {alumno['turno']}, tu turno es {user['turno_asignado']}"
     
-    hoy = datetime.now().strftime("%Y-%m-%d")
-    hora = datetime.now().strftime("%H:%M:%S")
+    hora = hora_peru_str()
     
     if c.execute("SELECT id FROM asistencias WHERE alumno_id = ? AND fecha = ?", (alumno['id'], hoy)).fetchone():
         conn.close()
@@ -368,7 +390,7 @@ def registrar_asistencia_rapida(dni, usuario=None):
     return True, f"✅ {nombre} | {alumno['grado']}{alumno['seccion']} | {estado} | {hora}"
 
 def marcar_faltas_automaticas():
-    hoy_dt = datetime.now()
+    hoy_dt = hora_peru()
     if not se_toma_asistencia(hoy_dt):
         return
     
@@ -424,6 +446,40 @@ def color_estado(val):
     elif val == 'Falta':
         return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
     return ''
+
+# ============================================================
+# FUNCIÓN PARA LEER QR CON QREADER
+# ============================================================
+
+def leer_qr_con_qreader(img):
+    """Lee un código QR desde una imagen usando qreader"""
+    try:
+        from qreader import QReader
+        import cv2
+        import numpy as np
+        
+        # Convertir PIL a numpy array
+        if hasattr(img, 'convert'):
+            img_array = np.array(img)
+        else:
+            img_array = img
+        
+        # qreader acepta imágenes en formato BGR o RGB
+        # Si la imagen tiene 3 canales (RGB), convertir a BGR para cv2
+        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+            img_cv2 = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        else:
+            img_cv2 = img_array
+        
+        qreader = QReader()
+        decoded_text = qreader.detect_and_decode(image=img_cv2)
+        
+        if decoded_text and len(decoded_text) > 0:
+            return decoded_text[0].strip()
+        return None
+    except Exception as e:
+        st.error(f"❌ Error en qreader: {str(e)}")
+        return None
 
 # ============================================================
 # VISTAS
@@ -483,14 +539,14 @@ def menu():
     return opcion
 
 # ============================================================
-# VISTA PUERTA (QR CORREGIDO)
+# VISTA PUERTA (CON QR MEJORADO)
 # ============================================================
 
 def vista_puerta():
     st.title("🚪 Control de Puerta")
     
-    hoy = datetime.now().strftime("%Y-%m-%d")
-    hoy_dt = datetime.now()
+    hoy = hora_peru().strftime("%Y-%m-%d")
+    hoy_dt = hora_peru()
     dia_semana = hoy_dt.weekday()
     
     conn = get_db()
@@ -507,7 +563,7 @@ def vista_puerta():
         st.info("📅 **DÍA LABORAL** - Se toma asistencia")
     else:
         st.warning("⛔ **FIN DE SEMANA** - No se toma asistencia")
-        st.caption("Los sábados y domingos no se registra asistencia a menos que sea un día especial")
+        st.caption("Los sábados y domingos no se registra asistencia")
         return
     
     marcar_faltas_automaticas()
@@ -567,49 +623,56 @@ def vista_puerta():
     metodo = st.radio("Método:", ["📷 Escanear QR", "👥 Seleccionar Estudiante"], horizontal=True)
     
     if metodo == "📷 Escanear QR":
-        st.info("El estudiante muestra su QR - Registro instantáneo")
+        st.info("📷 El estudiante muestra su QR - Registro instantáneo")
+        
         img_file = st.camera_input("Escanear QR", key="camara_qr", label_visibility="collapsed")
         
         if img_file:
             try:
                 from PIL import Image as PILImage
-                import numpy as np
                 
                 img = PILImage.open(BytesIO(img_file.getvalue()))
-                img_array = np.array(img)
                 
-                # ===== USAR QREADER EN LUGAR DE PYZBAR =====
-                try:
-                    from qreader import QReader
-                    qreader = QReader()
-                    decoded_text = qreader.detect_and_decode(image=img_array)
+                # ===== INTENTAR LEER QR =====
+                dni = leer_qr_con_qreader(img)
+                
+                if dni:
+                    st.write(f"📌 DNI detectado: **{dni}**")
                     
-                    if decoded_text and len(decoded_text) > 0:
-                        dni = decoded_text[0].strip()
-                        exito, msg = registrar_asistencia_rapida(dni, st.session_state.usuario)
-                        if exito:
-                            st.success(msg)
-                            st.balloons()
-                        else:
-                            st.error(msg)
+                    exito, msg = registrar_asistencia_rapida(dni, st.session_state.usuario)
+                    if exito:
+                        st.success(msg)
+                        st.balloons()
                     else:
-                        st.warning("⚠️ No se pudo leer el QR. Usa la opción de DNI manual.")
-                except ImportError:
-                    # Fallback: si no está qreader, mostrar mensaje
-                    st.warning("⚠️ El lector de QR no está disponible. Usa la opción de DNI manual.")
-                    dni_manual = st.text_input("Ingrese DNI manual:", max_chars=8, placeholder="12345678")
-                    if st.button("Registrar DNI"):
-                        if dni_manual:
+                        st.error(msg)
+                else:
+                    st.error("❌ QR NO DETECTADO")
+                    st.warning("📌 Consejos:")
+                    st.write("- Asegúrate de que el QR esté bien enfocado")
+                    st.write("- Prueba con mejor iluminación")
+                    st.write("- El QR debe contener solo el DNI (8 dígitos)")
+                    st.image(img, caption="Imagen capturada", width=200)
+                    
+                    # ===== OPCIÓN MANUAL =====
+                    st.markdown("---")
+                    st.subheader("📝 Ingresar DNI manual")
+                    dni_manual = st.text_input("DNI (8 dígitos)", max_chars=8, placeholder="12345678")
+                    if st.button("✅ Registrar manual", type="primary", use_container_width=True):
+                        if dni_manual and len(dni_manual) == 8 and dni_manual.isdigit():
                             exito, msg = registrar_asistencia_rapida(dni_manual.strip(), st.session_state.usuario)
                             if exito:
                                 st.success(msg)
+                                st.balloons()
                             else:
                                 st.error(msg)
+                        else:
+                            st.warning("❌ Ingresa un DNI válido de 8 dígitos")
+                            
             except Exception as e:
-                st.error(f"Error al leer la imagen: {str(e)}")
+                st.error(f"❌ Error al procesar la imagen: {str(e)}")
     
     else:
-        st.info("Seleccione grado y sección")
+        st.info("👥 Seleccione grado y sección")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -1154,6 +1217,7 @@ def vista_reportes():
             st.download_button("⬇️ Excel Completo", output.getvalue(), f"reporte_{periodo}.xlsx")
         with col2:
             pdf = generar_pdf_reporte(df, f"Reporte {periodo}")
+
             st.download_button("⬇️ PDF Completo", pdf, f"reporte_{periodo}.pdf", "application/pdf")
     else:
         st.subheader(f"Asistencias del Salón {salon_filtro}")
@@ -1211,7 +1275,7 @@ def vista_dias_especiales():
     
     st.title("📅 Días Especiales")
     
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = hora_peru().strftime("%Y-%m-%d")
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT * FROM dias_especiales WHERE fecha = ? AND activo = 1", (hoy,))
@@ -1222,7 +1286,7 @@ def vista_dias_especiales():
         st.success(f"🎉 **HOY ES DÍA ESPECIAL!** {hoy_especial['descripcion']}")
         st.info(f"⏰ Entrada: **{hoy_especial['hora_entrada']}**")
     else:
-        dia_semana = datetime.now().weekday()
+        dia_semana = hora_peru().weekday()
         if dia_semana >= 5:
             st.warning("⛔ **FIN DE SEMANA** - No se toma asistencia")
         else:
