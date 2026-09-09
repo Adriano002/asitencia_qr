@@ -11,6 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 import numpy as np
+import re
 
 # ===== CONFIGURACIÓN DE PÁGINA =====
 st.set_page_config(
@@ -268,8 +269,15 @@ def importar_alumnos_excel(df, mapeo):
     return exitos, errores, secciones_creadas
 
 def generar_qr_para_alumno(dni):
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    qr.add_data(dni)
+    """
+    Genera un código QR que contiene SOLO el DNI del alumno.
+    """
+    qr = qrcode.QRCode(
+        version=1,
+        box_size=10,
+        border=4
+    )
+    qr.add_data(str(dni).strip())
     qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white")
 
@@ -465,7 +473,6 @@ def leer_qr_con_qreader(img):
             img_array = img
         
         # qreader acepta imágenes en formato BGR o RGB
-        # Si la imagen tiene 3 canales (RGB), convertir a BGR para cv2
         if len(img_array.shape) == 3 and img_array.shape[2] == 3:
             img_cv2 = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
         else:
@@ -475,7 +482,12 @@ def leer_qr_con_qreader(img):
         decoded_text = qreader.detect_and_decode(image=img_cv2)
         
         if decoded_text and len(decoded_text) > 0:
-            return decoded_text[0].strip()
+            texto = decoded_text[0].strip()
+            # Buscar DNI (8 dígitos) en el texto
+            match = re.search(r'\b(\d{8})\b', texto)
+            if match:
+                return match.group(1)
+            return texto
         return None
     except Exception as e:
         st.error(f"❌ Error en qreader: {str(e)}")
@@ -539,7 +551,7 @@ def menu():
     return opcion
 
 # ============================================================
-# VISTA PUERTA (CON QR MEJORADO)
+# VISTA PUERTA
 # ============================================================
 
 def vista_puerta():
@@ -633,7 +645,6 @@ def vista_puerta():
                 
                 img = PILImage.open(BytesIO(img_file.getvalue()))
                 
-                # ===== INTENTAR LEER QR =====
                 dni = leer_qr_con_qreader(img)
                 
                 if dni:
@@ -650,10 +661,9 @@ def vista_puerta():
                     st.warning("📌 Consejos:")
                     st.write("- Asegúrate de que el QR esté bien enfocado")
                     st.write("- Prueba con mejor iluminación")
-                    st.write("- El QR debe contener solo el DNI (8 dígitos)")
+                    st.write("- El QR debe contener el DNI (8 dígitos)")
                     st.image(img, caption="Imagen capturada", width=200)
                     
-                    # ===== OPCIÓN MANUAL =====
                     st.markdown("---")
                     st.subheader("📝 Ingresar DNI manual")
                     dni_manual = st.text_input("DNI (8 dígitos)", max_chars=8, placeholder="12345678")
@@ -1217,7 +1227,6 @@ def vista_reportes():
             st.download_button("⬇️ Excel Completo", output.getvalue(), f"reporte_{periodo}.xlsx")
         with col2:
             pdf = generar_pdf_reporte(df, f"Reporte {periodo}")
-
             st.download_button("⬇️ PDF Completo", pdf, f"reporte_{periodo}.pdf", "application/pdf")
     else:
         st.subheader(f"Asistencias del Salón {salon_filtro}")
