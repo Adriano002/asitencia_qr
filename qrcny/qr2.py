@@ -59,12 +59,8 @@ def init_db():
     conn = get_db()
     c = conn.cursor()
     
-    # ===== TABLA turnos SIN hora_entrada/hora_salida (no se usan) =====
     c.execute("""CREATE TABLE IF NOT EXISTS turnos (
         id INTEGER PRIMARY KEY, nombre TEXT UNIQUE)""")
-    
-    # ===== ELIMINAR niveles =====
-    # c.execute("""CREATE TABLE IF NOT EXISTS niveles (...)
     
     c.execute("""CREATE TABLE IF NOT EXISTS grados (
         id INTEGER PRIMARY KEY, nombre TEXT)""")
@@ -187,10 +183,6 @@ def obtener_config_con_dia_especial(turno_id):
 # ============================================================
 
 def importar_alumnos_excel(df, mapeo):
-    """
-    Importa alumnos desde un DataFrame de Excel.
-    El turno se toma DIRECTAMENTE de la columna seleccionada en el mapeo.
-    """
     conn = get_db()
     c = conn.cursor()
     exitos = 0
@@ -208,7 +200,6 @@ def importar_alumnos_excel(df, mapeo):
             grado_nombre = str(row[mapeo['grado']]).strip()
             seccion_nombre = str(row[mapeo['seccion']]).strip()
             
-            # ===== TURNO OBLIGATORIO desde el Excel =====
             if 'turno' not in mapeo or not mapeo['turno']:
                 errores.append(f"Fila {index + 2}: No se seleccionó columna de Turno")
                 continue
@@ -222,7 +213,6 @@ def importar_alumnos_excel(df, mapeo):
                 errores.append(f"Fila {index + 2}: Turno '{turno_valor}' no válido (use Mañana o Tarde)")
                 continue
             
-            # Crear o buscar grado
             grado = c.execute("SELECT id FROM grados WHERE nombre = ?", (grado_nombre,)).fetchone()
             if not grado:
                 c.execute("INSERT INTO grados (nombre) VALUES (?)", (grado_nombre,))
@@ -460,7 +450,6 @@ def login():
                     st.session_state.rol = user['rol']
                     st.session_state.nombres = user['nombres']
                     st.session_state.turno_asignado = user['turno_asignado'] if user['turno_asignado'] else None
-                    # Guardar timestamp de login para mantener sesión
                     st.session_state.login_time = datetime.now().isoformat()
                     registrar_auditoria(usuario, "Inicio de sesión")
                     st.rerun()
@@ -494,7 +483,7 @@ def menu():
     return opcion
 
 # ============================================================
-# VISTA PUERTA
+# VISTA PUERTA (QR CORREGIDO)
 # ============================================================
 
 def vista_puerta():
@@ -580,24 +569,35 @@ def vista_puerta():
     if metodo == "📷 Escanear QR":
         st.info("El estudiante muestra su QR - Registro instantáneo")
         img_file = st.camera_input("Escanear QR", key="camara_qr", label_visibility="collapsed")
+        
         if img_file:
             try:
                 from PIL import Image as PILImage
+                import numpy as np
+                
                 img = PILImage.open(BytesIO(img_file.getvalue()))
+                img_array = np.array(img)
+                
+                # ===== USAR QREADER EN LUGAR DE PYZBAR =====
                 try:
-                    from pyzbar.pyzbar import decode
-                    codigos = decode(img)
-                    if codigos:
-                        dni = codigos[0].data.decode('utf-8').strip()
+                    from qreader import QReader
+                    qreader = QReader()
+                    decoded_text = qreader.detect_and_decode(image=img_array)
+                    
+                    if decoded_text and len(decoded_text) > 0:
+                        dni = decoded_text[0].strip()
                         exito, msg = registrar_asistencia_rapida(dni, st.session_state.usuario)
                         if exito:
                             st.success(msg)
                             st.balloons()
                         else:
                             st.error(msg)
+                    else:
+                        st.warning("⚠️ No se pudo leer el QR. Usa la opción de DNI manual.")
                 except ImportError:
-                    st.warning("No se pudo leer QR")
-                    dni_manual = st.text_input("Ingrese DNI del QR:")
+                    # Fallback: si no está qreader, mostrar mensaje
+                    st.warning("⚠️ El lector de QR no está disponible. Usa la opción de DNI manual.")
+                    dni_manual = st.text_input("Ingrese DNI manual:", max_chars=8, placeholder="12345678")
                     if st.button("Registrar DNI"):
                         if dni_manual:
                             exito, msg = registrar_asistencia_rapida(dni_manual.strip(), st.session_state.usuario)
@@ -606,7 +606,7 @@ def vista_puerta():
                             else:
                                 st.error(msg)
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                st.error(f"Error al leer la imagen: {str(e)}")
     
     else:
         st.info("Seleccione grado y sección")
@@ -1561,7 +1561,6 @@ def vista_horarios():
 # ============================================================
 
 def main():
-    # ===== MANTENER SESIÓN ACTIVA =====
     if "autenticado" not in st.session_state:
         st.session_state.autenticado = False
     
